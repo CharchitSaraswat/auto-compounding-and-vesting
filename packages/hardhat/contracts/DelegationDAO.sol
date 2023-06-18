@@ -26,9 +26,13 @@ contract DelegationDAO is AccessControl {
 
     // Member stakes (doesnt include rewards, represents member shares)
     mapping(address => uint256) public memberStakes;
+    mapping(address => uint256) public vestingTimeMap;
     
     // Total Staking Pool (doesnt include rewards, represents total shares)
     uint256 public totalStake;
+    uint256 public compoundingRate;  // in percentage
+    uint256 public compoundingInterval;  // in seconds
+    uint256 public lastCompoundingTime;
 
     // The ParachainStaking wrapper at the known pre-compile address. This will be used to make
     // all calls to the underlying staking solution
@@ -50,7 +54,7 @@ contract DelegationDAO is AccessControl {
     event withdrawal(address indexed _from, address indexed _to, uint _value);
 
     // Initialize a new DelegationDao dedicated to delegating to the given collator target.
-    constructor(address _target, address admin) {
+    constructor(address _target, address admin, uint256 rate, uint256 interval) {
         
         //Sets the collator that this DAO nominating
         target = _target;
@@ -64,7 +68,28 @@ contract DelegationDAO is AccessControl {
 
         //Initialize the DAO state
         currentState = daoState.COLLECTING;
+
+        compoundingRate = rate;
+        compoundingInterval = interval;
+        lastCompoundingTime = block.timestamp;
         
+    }
+
+    function compoundBalance() public {
+        require(block.timestamp >= lastCompoundingTime + compoundingInterval, "Compounding interval has not passed yet");
+        
+        uint256 accruedInterest = calculateAccruedInterest();
+        lastCompoundingTime = block.timestamp;
+        
+        payable(address(this)).transfer(accruedInterest);
+    }
+    
+    function calculateAccruedInterest() internal view returns (uint256) {
+        uint256 currentBalance = address(this).balance;
+        uint256 timeSinceLastCompounding = block.timestamp - lastCompoundingTime;
+        
+        uint256 compoundInterest = (currentBalance * compoundingRate * timeSinceLastCompounding) / (100 * compoundingInterval);
+        return compoundInterest;
     }
 
     // Grant a user the role of admin
@@ -94,7 +119,8 @@ contract DelegationDAO is AccessControl {
     }
 
     // Increase member stake via a payable function and automatically stake the added amount if possible
-    function add_stake() external payable onlyRole(MEMBER) {
+    function add_stake(uint256 vestingTime) external payable onlyRole(MEMBER) {
+
         if (currentState == daoState.STAKING ) {
             // Sanity check
             if(!staking.is_delegator(address(this))){
@@ -102,12 +128,14 @@ contract DelegationDAO is AccessControl {
             }
             memberStakes[msg.sender] = memberStakes[msg.sender].add(msg.value);
             totalStake = totalStake.add(msg.value);
+            vestingTimeMap[msg.sender] = block.timestamp + vestingTime;
             emit deposit(msg.sender, msg.value);
             staking.delegator_bond_more(target, msg.value);
         }
         else if  (currentState == daoState.COLLECTING ){
             memberStakes[msg.sender] = memberStakes[msg.sender].add(msg.value);
             totalStake = totalStake.add(msg.value);
+            vestingTimeMap[msg.sender] = block.timestamp + vestingTime;
             emit deposit(msg.sender, msg.value);
             if(totalStake < minDelegationStk){
                 return;
@@ -120,10 +148,13 @@ contract DelegationDAO is AccessControl {
         else {
             revert("The DAO is not accepting new stakes in the current state.");
         }
+        compoundBalance();
     }
 
     // Function for a user to withdraw their stake
     function withdraw(address payable account) public onlyRole(MEMBER) {
+        compoundBalance();
+        require(block.timestamp >= vestingTimeMap[msg.sender], "Vesting period is still not over");
         require(currentState != daoState.STAKING, "The DAO is not in the correct state to withdraw.");
         if (currentState == daoState.REVOKING) {
             bool result = execute_revoke();
@@ -150,6 +181,7 @@ contract DelegationDAO is AccessControl {
 
     // Schedule revoke, admin only
     function schedule_revoke() public onlyRole(DEFAULT_ADMIN_ROLE){
+        compoundBalance();
         require(currentState == daoState.STAKING, "The DAO is not in the correct state to schedule a revoke.");
         staking.schedule_revoke_delegation(target);
         currentState = daoState.REVOKING;
@@ -157,6 +189,7 @@ contract DelegationDAO is AccessControl {
     
     // Try to execute the revoke, returns true if it succeeds, false if it doesn't
     function execute_revoke() internal onlyRole(MEMBER) returns(bool) {
+        compoundBalance();
         require(currentState == daoState.REVOKING, "The DAO is not in the correct state to execute a revoke.");
         staking.execute_delegation_request(address(this), target);
         if (staking.is_delegator(address(this))){
@@ -180,8 +213,8 @@ contract DelegationDAO is AccessControl {
 
     // Reset the DAO state back to COLLECTING, admin only
     function reset_dao() public onlyRole(DEFAULT_ADMIN_ROLE) {
+        compoundBalance();
         currentState = daoState.COLLECTING;
     }
-
 
 }

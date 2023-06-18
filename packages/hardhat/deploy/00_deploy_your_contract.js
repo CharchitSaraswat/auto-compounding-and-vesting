@@ -20,7 +20,7 @@ module.exports = async ({ getNamedAccounts, deployments, getChainId }) => {
   await deploy("DelegationDAO", {
     // Learn more about args here: https://www.npmjs.com/package/hardhat-deploy#deploymentsdeploy
     from: deployer,
-    args: ["0x9658121Ae8e9Afb2a0134D8C3B5121aF915B10B0", "0x578002f699722394afc52169069a1FfC98DA36f1"],
+    args: ["0x2e89c950C2EbA16C117cE30a5BA63eD2997a0946", "0xD4bD5D1645928bb4D693503e1bE4dB1CD440F4d1"],
     log: true,
     waitConfirmations: 5,
   });
